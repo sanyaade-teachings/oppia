@@ -39,7 +39,6 @@ describe('State editor', function() {
 
     // Setup a terminating state
     editor.moveToState('final state');
-    editor.setContent(forms.toRichText('Congratulations, you have finished!'));
     editor.setInteraction('EndExploration');
     editor.saveChanges();
 
@@ -88,7 +87,6 @@ describe('State editor', function() {
 
     // Setup a terminating state
     editor.moveToState('final state');
-    editor.setContent(forms.toRichText('Congratulations, you have finished!'));
     editor.setInteraction('EndExploration');
     editor.saveChanges();
 
@@ -118,7 +116,6 @@ describe('State editor', function() {
 
     // Setup a terminating state
     editor.moveToState('final state');
-    editor.setContent(forms.toRichText('Congratulations, you have finished!'));
     editor.setInteraction('EndExploration');
     editor.saveChanges();
 
@@ -161,7 +158,6 @@ describe('Full exploration editor', function() {
 
     // Setup a terminating state
     editor.moveToState('final state');
-    editor.setContent(forms.toRichText('Congratulations, you have finished!'));
     editor.setInteraction('EndExploration');
     editor.saveChanges();
 
@@ -262,7 +258,6 @@ describe('Full exploration editor', function() {
 
       // Setup a terminating state
       editor.moveToState('final state');
-      editor.setContent(forms.toRichText('Congratulations, you have finished!'));
       editor.setInteraction('EndExploration');
 
       // Check editor preview tab
@@ -474,7 +469,6 @@ describe('Exploration history', function() {
 
     // Setup a terminating state
     editor.moveToState('final state');
-    editor.setContent(forms.toRichText('Congratulations, you have finished!'));
     editor.setInteraction('EndExploration');
     editor.moveToState('first');
     editor.saveChanges();
@@ -503,8 +497,9 @@ describe('Exploration history', function() {
       21: {text: '      feedback: []', highlighted: false},
       22: {text: '      param_changes: []', highlighted: false},
       23: {text: '  id: NumericInput', highlighted: true},
-      24: {text: 'param_changes: []', highlighted: false},
-      25: {text: ' ', highlighted: false}
+      24: {text: '  triggers: []', highlighted: false},
+      25: {text: 'param_changes: []', highlighted: false},
+      26: {text: ' ', highlighted: false}
     };
     var VERSION_2_STATE_1_CONTENTS = {
       1: {text: 'content:', highlighted: false},
@@ -523,8 +518,9 @@ describe('Exploration history', function() {
       12: {text: '      feedback: []', highlighted: false},
       13: {text: '      param_changes: []', highlighted: false},
       14: {text: '  id: null', highlighted: true},
-      15: {text: 'param_changes: []', highlighted: false},
-      16: {text: ' ', highlighted: false}
+      15: {text: '  triggers: []', highlighted: false},
+      16: {text: 'param_changes: []', highlighted: false},
+      17: {text: ' ', highlighted: false}
     };
     var STATE_2_STRING =
       'content:\n' +
@@ -543,6 +539,7 @@ describe('Exploration history', function() {
       '      feedback: []\n' +
       '      param_changes: []\n' +
       '  id: Continue\n' +
+      '  triggers: []\n' +
       'param_changes: []\n' +
       ' ';
 

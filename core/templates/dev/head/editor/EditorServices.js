@@ -1286,7 +1286,7 @@ oppia.factory('explorationWarningsService', [
     var statesWithoutInteractionIds = _getStatesWithoutInteractionIds();
     if (statesWithoutInteractionIds.length) {
       _warningsList.push({
-        type: WARNING_TYPES.CRITICAL,
+        type: WARNING_TYPES.ERROR,
         message: (
           'Please add interactions for these cards: ' +
           statesWithoutInteractionIds.join(', ') + '.')

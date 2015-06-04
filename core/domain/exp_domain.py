@@ -22,6 +22,7 @@ should therefore be independent of the specific storage models used."""
 
 __author__ = 'Sean Lip'
 
+import collections
 import copy
 import logging
 import re
@@ -49,13 +50,19 @@ STATE_PROPERTY_INTERACTION_HANDLERS = 'widget_handlers'
 # Kept for legacy purposes; not used anymore.
 STATE_PROPERTY_INTERACTION_STICKY = 'widget_sticky'
 
-
-def _is_interaction_terminal(interaction_id):
-    """Returns whether the given interaction id marks the end of an
-    exploration.
-    """
-    return interaction_registry.Registry.get_interaction_by_id(
-        interaction_id).is_terminal
+# This takes an additional 'state_name' parameter.
+CMD_ADD_STATE = 'add_state'
+# This takes additional 'old_state_name' and 'new_state_name' parameters.
+CMD_RENAME_STATE = 'rename_state'
+# This takes an additional 'state_name' parameter.
+CMD_DELETE_STATE = 'delete_state'
+# This takes additional 'property_name' and 'new_value' parameters.
+CMD_EDIT_STATE_PROPERTY = 'edit_state_property'
+# This takes additional 'property_name' and 'new_value' parameters.
+CMD_EDIT_EXPLORATION_PROPERTY = 'edit_exploration_property'
+# This takes additional 'from_version' and 'to_version' parameters for logging.
+CMD_MIGRATE_STATES_SCHEMA_TO_LATEST_VERSION = (
+    'migrate_states_schema_to_latest_version')
 
 
 class ExplorationChange(object):
@@ -95,6 +102,7 @@ class ExplorationChange(object):
             optionally, old_value)
         - 'edit_exploration_property' (with property_name, new_value and,
             optionally, old_value)
+        - 'migrate_states_schema' (with from_version and to_version)
 
         For a state, property_name must be one of STATE_PROPERTIES. For an
         exploration, property_name must be one of EXPLORATION_PROPERTIES.
@@ -103,27 +111,30 @@ class ExplorationChange(object):
             raise Exception('Invalid change_dict: %s' % change_dict)
         self.cmd = change_dict['cmd']
 
-        if self.cmd == 'add_state':
+        if self.cmd == CMD_ADD_STATE:
             self.state_name = change_dict['state_name']
-        elif self.cmd == 'rename_state':
+        elif self.cmd == CMD_RENAME_STATE:
             self.old_state_name = change_dict['old_state_name']
             self.new_state_name = change_dict['new_state_name']
-        elif self.cmd == 'delete_state':
+        elif self.cmd == CMD_DELETE_STATE:
             self.state_name = change_dict['state_name']
-        elif self.cmd == 'edit_state_property':
+        elif self.cmd == CMD_EDIT_STATE_PROPERTY:
             if change_dict['property_name'] not in self.STATE_PROPERTIES:
                 raise Exception('Invalid change_dict: %s' % change_dict)
             self.state_name = change_dict['state_name']
             self.property_name = change_dict['property_name']
             self.new_value = change_dict['new_value']
             self.old_value = change_dict.get('old_value')
-        elif self.cmd == 'edit_exploration_property':
+        elif self.cmd == CMD_EDIT_EXPLORATION_PROPERTY:
             if (change_dict['property_name'] not in
                     self.EXPLORATION_PROPERTIES):
                 raise Exception('Invalid change_dict: %s' % change_dict)
             self.property_name = change_dict['property_name']
             self.new_value = change_dict['new_value']
             self.old_value = change_dict.get('old_value')
+        elif self.cmd == CMD_MIGRATE_STATES_SCHEMA_TO_LATEST_VERSION:
+            self.from_version = change_dict['from_version']
+            self.to_version = change_dict['to_version']
         else:
             raise Exception('Invalid change_dict: %s' % change_dict)
 
@@ -448,6 +459,7 @@ class InteractionInstance(object):
                 {} if self.id is None
                 else self._get_full_customization_args()),
             'handlers': [handler.to_dict() for handler in self.handlers],
+            'triggers': self.triggers,
         }
 
     @classmethod
@@ -465,10 +477,11 @@ class InteractionInstance(object):
             interaction_dict['id'],
             interaction_dict['customization_args'],
             [AnswerHandlerInstance.from_dict_and_obj_type(h, obj_type)
-             for h in interaction_dict['handlers']])
+             for h in interaction_dict['handlers']],
+            interaction_dict['triggers'])
 
     def __init__(
-            self, interaction_id, customization_args, handlers):
+            self, interaction_id, customization_args, handlers, triggers):
         self.id = interaction_id
         # Customization args for the interaction's view. Parts of these
         # args may be Jinja templates that refer to state parameters.
@@ -479,10 +492,15 @@ class InteractionInstance(object):
         # Answer handlers and rule specs.
         self.handlers = [AnswerHandlerInstance(h.name, h.rule_specs)
                          for h in handlers]
+        # TODO(sll): Create Trigger class.
+        self.triggers = copy.deepcopy(triggers)
 
     @property
     def is_terminal(self):
-        return interaction_registry.Registry.get_interaction_by_id(
+        """Determines if this interaction type is terminal. If no ID is set for
+        this interaction, it is assumed to not be terminal.
+        """
+        return self.id and interaction_registry.Registry.get_interaction_by_id(
             self.id).is_terminal
 
     def validate(self):
@@ -538,6 +556,14 @@ class InteractionInstance(object):
         for handler in self.handlers:
             handler.validate()
 
+        # TODO(sll): Update trigger validation.
+        if not isinstance(self.triggers, list):
+            raise utils.ValidationError(
+                'Expected triggers to be a list, received %s'
+                % self.triggers)
+        if self.triggers:
+            raise utils.ValidationError('Expected empty triggers list.')
+
     @classmethod
     def create_default_interaction(cls, default_dest_state_name):
         default_obj_type = InteractionInstance._get_obj_type(
@@ -546,7 +572,8 @@ class InteractionInstance(object):
             cls._DEFAULT_INTERACTION_ID,
             {},
             [AnswerHandlerInstance.get_default_handler(
-                default_dest_state_name, default_obj_type)]
+                default_dest_state_name, default_obj_type)],
+            []
         )
 
 
@@ -602,6 +629,18 @@ class GadgetInstance(object):
             raise utils.ValidationError(
                 '%s gadget not visible in any states.' % (
                     self.gadget.name))
+
+        # Validate state name visibility isn't repeated within each gadget.
+        if len(self.visible_in_states) != len(set(self.visible_in_states)):
+            redundant_visible_states = [
+                state_name for state_name, count
+                in collections.Counter(self.visible_in_states).items()
+                if count > 1]
+            raise utils.ValidationError(
+                '%s specifies visibility repeatedly for state%s: %s' % (
+                    self.id,
+                    's' if len(redundant_visible_states) > 1 else '',
+                    ', '.join(redundant_visible_states)))
 
     def to_dict(self):
         """Returns GadgetInstance data represented in dict form."""
@@ -725,6 +764,7 @@ class State(object):
                 'param_changes': [],
             }],
         }],
+        'triggers': [],
     }
     DEFAULT_END_EXPLORATION_DICT = {
         'id': 'EndExploration',
@@ -753,7 +793,7 @@ class State(object):
         # The interaction instance associated with this state.
         self.interaction = InteractionInstance(
             interaction.id, interaction.customization_args,
-            interaction.handlers)
+            interaction.handlers, interaction.triggers)
 
     def validate(self, allow_null_interaction):
         if not isinstance(self.content, list):
@@ -773,12 +813,11 @@ class State(object):
         for param_change in self.param_changes:
             param_change.validate()
 
-        if not allow_null_interaction:
-            if self.interaction.id is None:
-                raise utils.ValidationError(
-                    'This state does not have any interaction specified.')
-            else:
-                self.interaction.validate()
+        if not allow_null_interaction and self.interaction.id is None:
+            raise utils.ValidationError(
+                'This state does not have any interaction specified.')
+        elif self.interaction.id is not None:
+            self.interaction.validate()
 
     def update_content(self, content_list):
         # TODO(sll): Must sanitize all content in RTE component attrs.
@@ -878,33 +917,13 @@ class State(object):
         }
 
     @classmethod
-    def _get_current_state_dict(cls, state_dict):
-        """If the state dict still uses 'widget', change it to 'interaction'.
-
-        This corresponds to the v3 --> v4 migration in the YAML representation
-        of an exploration.
-        """
-        if 'widget' in state_dict:
-            # This is an old version of the state dict which still uses
-            # 'widget'.
-            state_dict['interaction'] = copy.deepcopy(state_dict['widget'])
-            state_dict['interaction']['id'] = copy.deepcopy(
-                state_dict['interaction']['widget_id'])
-            del state_dict['interaction']['widget_id']
-            del state_dict['widget']
-
-        return copy.deepcopy(state_dict)
-
-    @classmethod
     def from_dict(cls, state_dict):
-        current_state_dict = cls._get_current_state_dict(state_dict)
-
         return cls(
             [Content.from_dict(item)
-             for item in current_state_dict['content']],
+             for item in state_dict['content']],
             [param_domain.ParamChange.from_dict(param)
-             for param in current_state_dict['param_changes']],
-            InteractionInstance.from_dict(current_state_dict['interaction']))
+             for param in state_dict['param_changes']],
+            InteractionInstance.from_dict(state_dict['interaction']))
 
     @classmethod
     def create_default_state(
@@ -1002,7 +1021,8 @@ class Exploration(object):
             feconf.DEFAULT_INIT_STATE_NAME, states_dict, {}, [], 0)
 
     @classmethod
-    def create_exploration_from_dict(cls, exploration_dict,
+    def create_exploration_from_dict(
+            cls, exploration_dict,
             exploration_version=0, exploration_created_on=None,
             exploration_last_updated=None):
         # NOTE TO DEVELOPERS: It is absolutely ESSENTIAL this conversion to and from
@@ -1064,7 +1084,7 @@ class Exploration(object):
 
             state.interaction = InteractionInstance(
                 idict['id'], idict['customization_args'],
-                interaction_handlers)
+                interaction_handlers, idict['triggers'])
 
             exploration.states[state_name] = state
 
@@ -1116,7 +1136,7 @@ class Exploration(object):
     def _require_valid_state_name(cls, name):
         cls._require_valid_name(name, 'a state name')
 
-    def validate(self, strict=False, allow_null_interaction=False):
+    def validate(self, strict=False):
         """Validates the exploration before it is committed to storage.
 
         If strict is True, performs advanced validation.
@@ -1204,7 +1224,7 @@ class Exploration(object):
         for state_name in self.states:
             self._require_valid_state_name(state_name)
             self.states[state_name].validate(
-                allow_null_interaction=allow_null_interaction)
+                allow_null_interaction=not strict)
 
         if self.states_schema_version is None:
             raise utils.ValidationError(
@@ -1355,7 +1375,7 @@ class Exploration(object):
 
             curr_state = self.states[curr_state_name]
 
-            if not _is_interaction_terminal(curr_state.interaction.id):
+            if not curr_state.interaction.is_terminal:
                 for handler in curr_state.interaction.handlers:
                     for rule in handler.rule_specs:
                         dest_state = rule.dest
@@ -1377,7 +1397,7 @@ class Exploration(object):
         curr_queue = []
 
         for (state_name, state) in self.states.iteritems():
-            if _is_interaction_terminal(state.interaction.id):
+            if state.interaction.is_terminal:
                 curr_queue.append(state_name)
 
         while curr_queue:
@@ -1536,78 +1556,149 @@ class Exploration(object):
 
         del self.states[state_name]
 
-    # Convert old states schema to the modern v1 schema. v1 contains the schema
-    # version 1 and does not contain any old constructs, such as widgets. This is
-    # a complete migration of everything previous to the schema versioning update
-    # to the earliest versioned schema.
     @classmethod
-    def convert_states_v0_dict_to_v1_dict(cls, exploration_dict):
-        exploration_dict['states_schema_version'] = 1
+    def _convert_states_v0_dict_to_v1_dict(cls, states_dict):
+        """Converts old states schema to the modern v1 schema. v1 contains the
+        schema version 1 and does not contain any old constructs, such as
+        widgets. This is a complete migration of everything previous to the
+        schema versioning update to the earliest versioned schema.
 
+        Note that the states_dict being passed in is modified in-place.
+        """
         # ensure widgets are renamed to be interactions
-        for _, state_defn in exploration_dict['states'].iteritems():
+        for _, state_defn in states_dict.iteritems():
             if 'widget' not in state_defn:
                 continue
             state_defn['interaction'] = copy.deepcopy(state_defn['widget'])
             state_defn['interaction']['id'] = copy.deepcopy(
                 state_defn['interaction']['widget_id'])
             del state_defn['interaction']['widget_id']
-            del state_defn['interaction']['sticky']
+            if 'sticky' in state_defn['interaction']:
+                del state_defn['interaction']['sticky']
             del state_defn['widget']
-        return exploration_dict
+        return states_dict
 
-    # Converts from version 1 to 2. Version 2 is not a different states schema from
-    # version 1, but it does have different expectations. Version 1 assumes the
-    # existence of an implicit 'END' state, but version 2 does not. As a result, the
-    # conversion process involves introducing a proper ending state for all
-    # explorations previously designed under this assumption.
     @classmethod
-    def convert_states_v1_dict_to_v2_dict(cls, exploration_dict):
-        exploration_dict['states_schema_version'] = 2
+    def _convert_states_v1_dict_to_v2_dict(cls, states_dict):
+        """Converts from version 1 to 2. Version 1 assumes the existence of an
+        implicit 'END' state, but version 2 does not. As a result, the
+        conversion process involves introducing a proper ending state for all
+        explorations previously designed under this assumption.
 
+        Note that the states_dict being passed in is modified in-place.
+        """
+        # The name of the implicit END state before the migration. Needed here
+        # to migrate old explorations which expect that implicit END state.
+        _OLD_END_DEST = 'END'
+
+        # Adds an explicit state called 'END' with an EndExploration to replace
+        # links other states have to an implicit 'END' state. Otherwise, if no
+        # states refer to a state called 'END', no new state will be introduced
+        # since it would be isolated from all other states in the graph and
+        # create additional warnings for the user. If they were not referring to
+        # an 'END' state before, then they would only be receiving warnings
+        # about not being able to complete the exploration. The introduction of
+        # a real END state would produce additional warnings (state cannot be
+        # reached from other states, etc.)
         targets_end_state = False
         has_end_state = False
-        for (state_name, sdict) in exploration_dict['states'].iteritems():
-            if not has_end_state and state_name == feconf.END_DEST:
+        for (state_name, sdict) in states_dict.iteritems():
+            if not has_end_state and state_name == _OLD_END_DEST:
                 has_end_state = True
 
             if not targets_end_state:
                 for handler in sdict['interaction']['handlers']:
                     for rule_spec in handler['rule_specs']:
-                        if rule_spec['dest'] == feconf.END_DEST:
+                        if rule_spec['dest'] == _OLD_END_DEST:
                             targets_end_state = True
                             break
 
-        # ensure any explorations pointing to an END state has a valid END
+        # Ensure any explorations pointing to an END state has a valid END
         # state to end with (in case it expects an END state)
         if targets_end_state and not has_end_state:
-            exploration_dict['states'][feconf.END_DEST] = {
-                'name': feconf.END_DEST,
-                'content': [ { 'type': 'text', 'value':
-                    'Congratulations, you have finished!' } ],
-                'interaction': { 'id': 'EndExploration',
+            states_dict[_OLD_END_DEST] = {
+                'content': [{
+                    'type': 'text',
+                    'value': 'Congratulations, you have finished!'
+                }],
+                'interaction': {
+                    'id': 'EndExploration',
                     'customization_args': {
                         'recommendedExplorationIds': {
                             'value': []
                         }
                     },
-
                     'handlers': [{
                         'name': 'submit',
                         'rule_specs': [{
                             'definition': {
                                 'rule_type': 'default'
                             },
-                        'dest': feconf.END_DEST,
-                        'feedback': [],
-                        'param_changes': []
+                            'dest': _OLD_END_DEST,
+                            'feedback': [],
+                            'param_changes': []
                         }]
-                    }]
+                    }],
+                    'triggers': []
                 },
                 'param_changes': []
             }
 
-        return exploration_dict
+        return states_dict
+
+    @classmethod
+    def _convert_states_v2_dict_to_v3_dict(cls, states_dict):
+        """Converts from version 2 to 3. Version 3 introduces a triggers list
+        within interactions.
+
+        Note that the states_dict being passed in is modified in-place.
+        """
+        # Ensure all states interactions have a triggers list.
+        for (state_name, sdict) in states_dict.iteritems():
+            interaction = sdict['interaction']
+            if 'triggers' not in interaction:
+                interaction['triggers'] = []
+
+        return states_dict
+
+    @classmethod
+    def update_states_v0_to_v1_from_model(cls, versioned_exploration_states):
+        """Converts from states schema version 0 to 1 of the states blob
+        contained in the versioned exploration states dict provided.
+
+        Note that the versioned_exploration_states being passed in is modified
+        in-place.
+        """
+        versioned_exploration_states['states_schema_version'] = 1
+        converted_states = cls._convert_states_v0_dict_to_v1_dict(
+            versioned_exploration_states['states'])
+        versioned_exploration_states['states'] = converted_states
+
+    @classmethod
+    def update_states_v1_to_v2_from_model(cls, versioned_exploration_states):
+        """Converts from states schema version 1 to 2 of the states blob
+        contained in the versioned exploration states dict provided.
+
+        Note that the versioned_exploration_states being passed in is modified
+        in-place.
+        """
+        versioned_exploration_states['states_schema_version'] = 2
+        converted_states = cls._convert_states_v1_dict_to_v2_dict(
+            versioned_exploration_states['states'])
+        versioned_exploration_states['states'] = converted_states
+
+    @classmethod
+    def update_states_v2_to_v3_from_model(cls, versioned_exploration_states):
+        """Converts from states schema version 2 to 3 of the states blob
+        contained in the versioned exploration states dict provided.
+
+        Note that the versioned_exploration_states being passed in is modified
+        in-place.
+        """
+        versioned_exploration_states['states_schema_version'] = 3
+        converted_states = cls._convert_states_v2_dict_to_v3_dict(
+            versioned_exploration_states['states'])
+        versioned_exploration_states['states'] = converted_states
 
     # The current version of the exploration YAML schema. If any backward-
     # incompatible changes are made to the exploration schema in the YAML
@@ -1677,14 +1768,16 @@ class Exploration(object):
         """Converts a v5 exploration dict into a v6 exploration dict."""
         exploration_dict['schema_version'] = 6
 
-        # Ensure the exploration has a states schema version
-        exploration_dict['states_schema_version'] = 0
-
         # Ensure this exploration is up-to-date with states schema v2
-        exploration_dict = cls.convert_states_v0_dict_to_v1_dict(
-            exploration_dict)
-        exploration_dict = cls.convert_states_v1_dict_to_v2_dict(
-            exploration_dict)
+        exploration_dict['states'] = cls._convert_states_v0_dict_to_v1_dict(
+            exploration_dict['states'])
+        exploration_dict['states'] = cls._convert_states_v1_dict_to_v2_dict(
+            exploration_dict['states'])
+        exploration_dict['states'] = cls._convert_states_v2_dict_to_v3_dict(
+            exploration_dict['states'])
+
+        # Ensure the exploration is at states schema version 3 after upgrades
+        exploration_dict['states_schema_version'] = 3
 
         return exploration_dict
 
@@ -1741,12 +1834,22 @@ class Exploration(object):
     def to_yaml(self):
         exp_dict = self.to_dict()
         exp_dict['schema_version'] = self.CURRENT_EXPLORATION_SCHEMA_VERSION
+
+        # Remove elements from the exploration dictionary that should not be
+        # saved within the YAML representation.
+        del exp_dict['id']
+        del exp_dict['title']
+        del exp_dict['category']
+
         return utils.yaml_from_dict(exp_dict)
 
     def to_dict(self):
         """Returns a copy of the exploration as a dictionary. It includes all
         necessary information to represent the exploration."""
-        return {
+        return copy.deepcopy({
+            'id': self.id,
+            'title': self.title,
+            'category': self.category,
             'author_notes': self.author_notes,
             'blurb': self.blurb,
             'default_skin': self.default_skin,
@@ -1761,7 +1864,7 @@ class Exploration(object):
                 'skin_customizations'],
             'states': {state_name: state.to_dict()
                        for (state_name, state) in self.states.iteritems()}
-        }
+        })
 
     def to_player_dict(self):
         """Returns a copy of the exploration suitable for inclusion in the

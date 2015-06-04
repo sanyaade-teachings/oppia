@@ -62,6 +62,7 @@ states:
           feedback: []
           param_changes: []
       id: null
+      triggers: []
     param_changes: []
   New state:
     content:
@@ -78,8 +79,9 @@ states:
           feedback: []
           param_changes: []
       id: null
+      triggers: []
     param_changes: []
-states_schema_version: 2
+states_schema_version: 3
 tags: []
 """) % (
     feconf.DEFAULT_INIT_STATE_NAME, feconf.DEFAULT_INIT_STATE_NAME,
@@ -131,6 +133,7 @@ states:
           feedback: []
           param_changes: []
       id: TextInput
+      triggers: []
     param_changes: []
   New state:
     content:
@@ -151,6 +154,7 @@ states:
           feedback: []
           param_changes: []
       id: TextInput
+      triggers: []
     param_changes: []
   Second state:
     content:
@@ -171,8 +175,9 @@ states:
           feedback: []
           param_changes: []
       id: TextInput
+      triggers: []
     param_changes: []
-states_schema_version: 2
+states_schema_version: 3
 tags: []
 """) % (
     feconf.DEFAULT_INIT_STATE_NAME, feconf.DEFAULT_INIT_STATE_NAME,
@@ -295,6 +300,14 @@ class ExplorationDomainUnitTests(test_utils.GenericTestBase):
         }
         exploration.validate()
 
+        init_state = exploration.states[exploration.init_state_name]
+        init_state.interaction.triggers = ['element']
+        with self.assertRaisesRegexp(
+                utils.ValidationError, 'Expected empty triggers list.'):
+            exploration.validate()
+        init_state.interaction.triggers = []
+        exploration.validate()
+
     def test_tag_validation(self):
         """Test validation of exploration tags."""
         exploration = exp_domain.Exploration.create_default_exploration(
@@ -398,6 +411,15 @@ class ExplorationDomainUnitTests(test_utils.GenericTestBase):
             exploration.states['GHI'] = ghi_state
             exploration.validate()
 
+            gadget_instance.visible_in_states.extend(['GHI'])
+            with self.assertRaisesRegexp(
+                    utils.ValidationError,
+                    'TestGadget specifies visibility repeatedly for state: GHI'):
+                exploration.validate()
+
+            # Remove duplicate state.
+            gadget_instance.visible_in_states.pop()
+
             # Adding a panel that doesn't exist in the skin.
             exploration.skin_instance.panel_contents_dict[
                 'non_existent_panel'] = []
@@ -458,6 +480,27 @@ class ExplorationDomainUnitTests(test_utils.GenericTestBase):
             'abcd', 'title', 'category')
         self.assertEqual(notdemo2.is_demo, False)
 
+    def test_exploration_export_import(self):
+        """Test that to_dict and from_dict preserve all data within an
+        exploration.
+        """
+        demo = exp_domain.Exploration.create_default_exploration(
+            '0', 'title', 'category')
+        demo_dict = demo.to_dict()
+        exp_from_dict = exp_domain.Exploration.create_exploration_from_dict(
+            demo_dict)
+        self.assertEqual(exp_from_dict.to_dict(), demo_dict)
+
+    def test_interaction_with_none_id_is_not_terminal(self):
+        """Test that an interaction with an id of None leads to is_terminal
+        being false.
+        """
+        # Default exploration has a default interaction with an ID of None.
+        demo = exp_domain.Exploration.create_default_exploration(
+            '0', 'title', 'category')
+        init_state = demo.states[feconf.DEFAULT_INIT_STATE_NAME]
+        self.assertFalse(init_state.interaction.is_terminal)
+
 
 class StateExportUnitTests(test_utils.GenericTestBase):
     """Test export of states."""
@@ -489,6 +532,7 @@ class StateExportUnitTests(test_utils.GenericTestBase):
                     }]
                 }],
                 'id': None,
+                'triggers': [],
             },
             'param_changes': [],
         }
@@ -589,7 +633,7 @@ states:
       rule_specs:
       - definition:
           rule_type: default
-        dest: New state
+        dest: END
         feedback: []
         param_changes: []
     sticky: false
@@ -632,7 +676,7 @@ states:
         rule_specs:
         - definition:
             rule_type: default
-          dest: New state
+          dest: END
           feedback: []
           param_changes: []
       sticky: false
@@ -688,7 +732,7 @@ states:
         rule_specs:
         - definition:
             rule_type: default
-          dest: New state
+          dest: END
           feedback: []
           param_changes: []
       sticky: false
@@ -742,7 +786,7 @@ states:
         rule_specs:
         - definition:
             rule_type: default
-          dest: New state
+          dest: END
           feedback: []
           param_changes: []
       id: TextInput
@@ -797,7 +841,7 @@ states:
         rule_specs:
         - definition:
             rule_type: default
-          dest: New state
+          dest: END
           feedback: []
           param_changes: []
       id: TextInput
@@ -837,6 +881,26 @@ states:
           feedback: []
           param_changes: []
       id: TextInput
+      triggers: []
+    param_changes: []
+  END:
+    content:
+    - type: text
+      value: Congratulations, you have finished!
+    interaction:
+      customization_args:
+        recommendedExplorationIds:
+          value: []
+      handlers:
+      - name: submit
+        rule_specs:
+        - definition:
+            rule_type: default
+          dest: END
+          feedback: []
+          param_changes: []
+      id: EndExploration
+      triggers: []
     param_changes: []
   New state:
     content:
@@ -853,12 +917,13 @@ states:
         rule_specs:
         - definition:
             rule_type: default
-          dest: New state
+          dest: END
           feedback: []
           param_changes: []
       id: TextInput
+      triggers: []
     param_changes: []
-states_schema_version: 2
+states_schema_version: 3
 tags: []
 """)
 
@@ -900,6 +965,7 @@ tags: []
             'eid', 'A title', 'A category', self.YAML_CONTENT_V6)
         self.assertEqual(exploration.to_yaml(), self._LATEST_YAML_CONTENT)
 
+
 class ConversionUnitTests(test_utils.GenericTestBase):
     """Test conversion methods."""
 
@@ -931,6 +997,7 @@ class ConversionUnitTests(test_utils.GenericTestBase):
                         }],
                     }],
                     'id': None,
+                    'triggers': [],
                 },
                 'param_changes': [],
             }
@@ -1172,7 +1239,7 @@ class GadgetInstanceUnitTests(test_utils.GenericTestBase):
         panel_contents_dict['left'].append(test_gadget_instance)
         with self.assertRaisesRegexp(
                 utils.ValidationError,
-                "'left' panel expected at most 1 gadget, received 2."):
+                "'left' panel expected at most 1 gadget, but 2 gadgets are visible in state 'New state'."):
             exploration.validate()
 
         # Assert that an error is raised when a gadget is not visible in any

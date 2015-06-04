@@ -34,8 +34,6 @@ import zipfile
 from core.domain import event_services
 from core.domain import exp_domain
 from core.domain import fs_domain
-from core.domain import html_cleaner
-from core.domain import param_domain
 from core.domain import rights_manager
 from core.platform import models
 import feconf
@@ -51,18 +49,26 @@ CMD_CREATE_NEW = 'create_new'
 #Name for the exploration search index
 SEARCH_INDEX_EXPLORATIONS = 'explorations'
 
-# Holds the responsibility of performing a step-by-step, sequential update of
-# an exploration states structure based on the schema version of the input
-# exploration dictionary. This is very similar to the YAML conversion process
-# found in exp_domain.py and, in fact, many of the conversion functions for
-# states are also used in the YAML conversion pipeline. If the current
-# exploration states schema version changes above, a new conversion function
-# must be added and some code appended to this function to account for that new
-# version.
-def _migrate_states_schema(exploration_dict):
-    exploration_states_schema_version = exploration_dict[
+def _migrate_states_schema(versioned_exploration_states):
+    """Holds the responsibility of performing a step-by-step, sequential update
+    of an exploration states structure based on the schema version of the input
+    exploration dictionary. This is very similar to the YAML conversion process
+    found in exp_domain.py and, in fact, many of the conversion functions for
+    states are also used in the YAML conversion pipeline. If the current
+    exploration states schema version changes
+    (feconf.CURRENT_EXPLORATION_STATES_SCHEMA_VERSION), a new conversion
+    function must be added and some code appended to this function to account
+    for that new version.
+
+    Args:
+        versioned_exploration_states: A dict with two keys:
+          - states_schema_version: the states schema version for the
+            exploration.
+          - states: the dict of states comprising the exploration. The keys in
+            this dict are state names.
+    """
+    exploration_states_schema_version = versioned_exploration_states[
         'states_schema_version']
-    initial_version = exploration_states_schema_version
     if (exploration_states_schema_version is None
             or exploration_states_schema_version < 1):
         exploration_states_schema_version = 0
@@ -70,25 +76,28 @@ def _migrate_states_schema(exploration_dict):
     if not (0 <= exploration_states_schema_version
             <= feconf.CURRENT_EXPLORATION_STATES_SCHEMA_VERSION):
         raise Exception(
-            'Sorry, we can only process v1 and unversioned exploration state '
-            'schemas at present.')
+            'Sorry, we can only process v1-v%d and unversioned exploration '
+            'state schemas at present.' %
+            feconf.CURRENT_EXPLORATION_STATES_SCHEMA_VERSION)
 
-    # check for conversions to v1
+    # Check for conversion to v1.
     if exploration_states_schema_version == 0:
-        exploration_dict = exp_domain.Exploration. \
-            convert_states_v0_dict_to_v1_dict(exploration_dict)
+        exp_domain.Exploration.update_states_v0_to_v1_from_model(
+            versioned_exploration_states)
         exploration_states_schema_version = 1
 
-    # check for conversion to v2
+    # Check for conversion to v2.
     if exploration_states_schema_version == 1:
-        exploration_dict = exp_domain.Exploration. \
-            convert_states_v1_dict_to_v2_dict(exploration_dict)
+        exp_domain.Exploration.update_states_v1_to_v2_from_model(
+            versioned_exploration_states)
         exploration_states_schema_version = 2
 
-    # finished pipelining the exploration; if the exploration has been upgraded,
-    # save previous states schema version (useful to the exp migration job)
-    exploration_dict['prev_states_schema_version'] = initial_version
-    return exploration_dict
+    # Check for conversion to v3.
+    if exploration_states_schema_version == 2:
+        exp_domain.Exploration.update_states_v2_to_v3_from_model(
+            versioned_exploration_states)
+        exploration_states_schema_version = 3
+
 
 # Repository GET methods.
 def _get_exploration_memcache_key(exploration_id, version=None):
@@ -99,43 +108,44 @@ def _get_exploration_memcache_key(exploration_id, version=None):
         return 'exploration:%s' % exploration_id
 
 
-def get_exploration_from_model(exploration_model):
-    exploration = exp_domain.Exploration(
+def get_exploration_from_model(exploration_model, run_conversion=True):
+    """Returns an Exploration domain object given an exploration model loaded
+    from the datastore.
+
+    If run_conversion is True, then the exploration's states schema version will
+    be checked against the current states schema version. If they do not match,
+    the exploration will be automatically updated to the latest states schema
+    version.
+
+    IMPORTANT NOTE TO DEVELOPERS: In general, run_conversion should never be
+    False. This option is only used for testing that the states schema version
+    migration works correctly, and it should never be changed otherwise.
+    """
+
+    # Ensure the original exploration model does not get altered.
+    versioned_exploration_states = {
+        'states_schema_version': exploration_model.states_schema_version,
+        'states': copy.deepcopy(exploration_model.states)
+    }
+
+    # If the exploration uses the latest states schema version, no conversion
+    # is necessary.
+    if (run_conversion and exploration_model.states_schema_version !=
+            feconf.CURRENT_EXPLORATION_STATES_SCHEMA_VERSION):
+        _migrate_states_schema(versioned_exploration_states)
+
+    return exp_domain.Exploration(
         exploration_model.id, exploration_model.title,
         exploration_model.category, exploration_model.objective,
         exploration_model.language_code, exploration_model.tags,
         exploration_model.blurb, exploration_model.author_notes,
         exploration_model.default_skin, exploration_model.skin_customizations,
-        exploration_model.states_schema_version,
-        exploration_model.init_state_name, exploration_model.states,
+        versioned_exploration_states['states_schema_version'],
+        exploration_model.init_state_name,
+        versioned_exploration_states['states'],
         exploration_model.param_specs, exploration_model.param_changes,
         exploration_model.version, exploration_model.created_on,
         exploration_model.last_updated)
-    if (exploration.states_schema_version ==
-            feconf.CURRENT_EXPLORATION_STATES_SCHEMA_VERSION):
-        return exploration # latest version; no conversion is necessary
-
-    # migrating an exploration involves converting it to a dict, updating the
-    # dict sequentially, then converting the dict back to an exploration for
-    # use in the Oppia backend
-    exploration_dict = _migrate_states_schema(exploration.to_dict())
-
-    # convert the exp dict back into an Exploration (originally part of
-    # exp_domain.from_yaml).
-    exploration_dict['id'] = exploration_model.id
-    exploration_dict['title'] = exploration_model.title
-    exploration_dict['category'] = exploration_model.category
-    exploration = exp_domain.Exploration.create_exploration_from_dict(
-        exploration_dict,
-        exploration_version=exploration_model.version, # doesn't change here
-        exploration_created_on=exploration_model.created_on,
-        exploration_last_updated=exploration_model.last_updated)
-
-    # additional meta data attached to the exploration for use in the migration
-    # job service
-    exploration.prev_states_schema_version = exploration_dict[
-        'prev_states_schema_version']
-    return exploration
 
 
 def get_exploration_summary_from_model(exp_summary_model):
@@ -434,14 +444,14 @@ def apply_change_list(exploration_id, change_list):
                    for change_dict in change_list]
 
         for change in changes:
-            if change.cmd == 'add_state':
+            if change.cmd == exp_domain.CMD_ADD_STATE:
                 exploration.add_states([change.state_name])
-            elif change.cmd == 'rename_state':
+            elif change.cmd == exp_domain.CMD_RENAME_STATE:
                 exploration.rename_state(
                     change.old_state_name, change.new_state_name)
-            elif change.cmd == 'delete_state':
+            elif change.cmd == exp_domain.CMD_DELETE_STATE:
                 exploration.delete_state(change.state_name)
-            elif change.cmd == 'edit_state_property':
+            elif change.cmd == exp_domain.CMD_EDIT_STATE_PROPERTY:
                 state = exploration.states[change.state_name]
                 if (change.property_name ==
                         exp_domain.STATE_PROPERTY_PARAM_CHANGES):
@@ -458,7 +468,7 @@ def apply_change_list(exploration_id, change_list):
                 elif (change.property_name ==
                         exp_domain.STATE_PROPERTY_INTERACTION_HANDLERS):
                     state.update_interaction_handlers(change.new_value)
-            elif change.cmd == 'edit_exploration_property':
+            elif change.cmd == exp_domain.CMD_EDIT_EXPLORATION_PROPERTY:
                 if change.property_name == 'title':
                     exploration.update_title(change.new_value)
                 elif change.property_name == 'category':
@@ -481,6 +491,13 @@ def apply_change_list(exploration_id, change_list):
                     exploration.update_default_skin_id(change.new_value)
                 elif change.property_name == 'init_state_name':
                     exploration.update_init_state_name(change.new_value)
+            elif (change.cmd ==
+                    exp_domain.CMD_MIGRATE_STATES_SCHEMA_TO_LATEST_VERSION):
+                # Loading the exploration model from the datastore into an
+                # Eploration domain object automatically converts it to use the
+                # latest states schema version. As a result, simply resaving the
+                # exploration is sufficient to apply the states schema update.
+                continue
         return exploration
 
     except Exception as e:
@@ -536,7 +553,7 @@ def get_summary_of_change_list(base_exploration, change_list):
     }
 
     for change in changes:
-        if change.cmd == 'add_state':
+        if change.cmd == exp_domain.CMD_ADD_STATE:
             if change.state_name in changed_states:
                 continue
             elif change.state_name in deleted_states:
@@ -546,7 +563,7 @@ def get_summary_of_change_list(base_exploration, change_list):
             else:
                 added_states.append(change.state_name)
                 original_state_names[change.state_name] = change.state_name
-        elif change.cmd == 'rename_state':
+        elif change.cmd == exp_domain.CMD_RENAME_STATE:
             orig_state_name = original_state_names[change.old_state_name]
             original_state_names[change.new_state_name] = orig_state_name
 
@@ -561,7 +578,7 @@ def get_summary_of_change_list(base_exploration, change_list):
                 }
             state_property_changes[orig_state_name]['name']['new_value'] = (
                 change.new_state_name)
-        elif change.cmd == 'delete_state':
+        elif change.cmd == exp_domain.CMD_DELETE_STATE:
             orig_state_name = original_state_names[change.state_name]
             if orig_state_name in changed_states:
                 continue
@@ -569,7 +586,7 @@ def get_summary_of_change_list(base_exploration, change_list):
                 added_states.remove(orig_state_name)
             else:
                 deleted_states.append(orig_state_name)
-        elif change.cmd == 'edit_state_property':
+        elif change.cmd == exp_domain.CMD_EDIT_STATE_PROPERTY:
             orig_state_name = original_state_names[change.state_name]
             if orig_state_name in changed_states:
                 continue
@@ -584,7 +601,7 @@ def get_summary_of_change_list(base_exploration, change_list):
                 }
             state_property_changes[orig_state_name][property_name][
                 'new_value'] = change.new_value
-        elif change.cmd == 'edit_exploration_property':
+        elif change.cmd == exp_domain.CMD_EDIT_EXPLORATION_PROPERTY:
             property_name = change.property_name
 
             if property_name not in exploration_property_changes:
@@ -593,6 +610,9 @@ def get_summary_of_change_list(base_exploration, change_list):
                 }
             exploration_property_changes[property_name]['new_value'] = (
                 change.new_value)
+        elif (change.cmd ==
+                exp_domain.CMD_MIGRATE_STATES_SCHEMA_TO_LATEST_VERSION):
+            continue
 
     unchanged_exploration_properties = []
     for property_name in exploration_property_changes:
@@ -695,7 +715,7 @@ def _create_exploration(
     """
     # This line is needed because otherwise a rights object will be created,
     # but the creation of an exploration object will fail.
-    exploration.validate(allow_null_interaction=True)
+    exploration.validate()
     rights_manager.create_new_exploration_rights(exploration.id, committer_id)
     model = exp_models.ExplorationModel(
         id=exploration.id,
@@ -709,6 +729,7 @@ def _create_exploration(
         default_skin=exploration.default_skin,
         skin_customizations=exploration.skin_instance.to_dict(
             )['skin_customizations'],
+        states_schema_version=exploration.states_schema_version,
         init_state_name=exploration.init_state_name,
         states={
             state_name: state.to_dict()
@@ -857,12 +878,6 @@ def update_exploration(
     # update summary of changed exploration
     update_exploration_summary(exploration.id)
 
-def save_exploration(committer_id, exploration, commit_message):
-    """Save an exploration given a committer and message. This does not apply a
-    sequence of changes. For that, use update_exploration.
-    """
-    _save_exploration(committer_id, exploration, commit_message, None)
-
 
 def create_exploration_summary(exploration_id):
     """Create summary of an exploration and store in datastore."""
@@ -965,7 +980,7 @@ def revert_exploration(
     else:
         exploration.validate()
 
-    exploration_model.revert(
+    exp_models.ExplorationModel.revert(exploration_model,
         committer_id, 'Reverted exploration to version %s' % revert_to_version,
         revert_to_version)
     memcache_services.delete(_get_exploration_memcache_key(exploration_id))
