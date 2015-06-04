@@ -202,10 +202,10 @@ oppia.factory('rulesService', [
 
 oppia.controller('StateRules', [
     '$scope', '$rootScope', '$modal', 'stateInteractionIdService', 'editorContextService',
-    'warningsData', 'rulesService',
+    'warningsData', 'rulesService', 'explorationStatesService',
     function(
       $scope, $rootScope, $modal, stateInteractionIdService, editorContextService,
-      warningsData, rulesService) {
+      warningsData, rulesService, explorationStatesService) {
   $scope.answerChoices = null;
 
   $scope.getAnswerChoices = function() {
@@ -309,6 +309,21 @@ oppia.controller('StateRules', [
           return (
             tmpRule.dest === editorContextService.getActiveStateName() &&
             !hasFeedback);
+        };
+
+        // TODO(bhenning): Don't duplicate this code with that in ruleEditor.js.
+        // We use a slash because this character is forbidden in a state name.
+        var _PLACEHOLDER_RULE_DEST = '/';
+        var _PLACEHOLDER_RULE_DEST_END = '//';
+
+        $scope.isCreatingNewState = function(tmpRule) {
+          return tmpRule.dest === _PLACEHOLDER_RULE_DEST ||
+              tmpRule.dest === _PLACEHOLDER_RULE_DEST_END;
+        };
+
+        $scope.isNewStateNameValid = function(newStateName) {
+          var ess = explorationStatesService;
+          return ess.isNewStateNameValid(newStateName, false);
         };
 
         $scope.addRuleForm = {};

@@ -65,8 +65,10 @@ oppia.directive('ruleTypeSelector', [function() {
         });
       }
 
+      // Select the first choice by default.
       if (!$scope.localValue) {
-        $scope.localValue = choices[choices.length - 1].id;
+        $scope.localValue = choices[0].id;
+        $scope.onSelectionChange()($scope.localValue);
       }
 
       var select2Node = $element[0].firstChild;
@@ -251,21 +253,36 @@ oppia.directive('ruleDetailsEditor', ['$log', function($log) {
         var _PLACEHOLDER_RULE_DEST_END = '//';
 
         $scope.$on('saveRuleDetails', function() {
-          // Remove null feedback.
-          var nonemptyFeedback = [];
-          for (var i = 0; i < $scope.rule.feedback.length; i++) {
-            if ($scope.rule.feedback[i]) {
-              nonemptyFeedback.push($scope.rule.feedback[i]);
+          // If creating a new state, be sure to create it.
+          var creatingNewState = ($scope.rule.dest === _PLACEHOLDER_RULE_DEST)
+            || ($scope.rule.dest === _PLACEHOLDER_RULE_DEST_END);
+          if (creatingNewState) {
+            var newEndState = ($scope.rule.dest === _PLACEHOLDER_RULE_DEST_END);
+            var newStateName = $scope.rule.newStateName;
+            $scope.rule.newStateName = '';
+
+            // Remove null feedback.
+            var nonemptyFeedback = [];
+            for (var i = 0; i < $scope.rule.feedback.length; i++) {
+              if ($scope.rule.feedback[i]) {
+                nonemptyFeedback.push($scope.rule.feedback[i]);
+              }
             }
+            $scope.rule.feedback = nonemptyFeedback;
+
+            $scope.rule.dest = newStateName;
+            lastSetRuleDest = $scope.rule.dest;
+
+            explorationStatesService.addState(newStateName, null, newEndState);
           }
-          $scope.rule.feedback = nonemptyFeedback;
+          $scope.reloadingDestinations = true;
         });
 
         $scope.createNewDestIfNecessary = function() {
           if ($scope.rule.dest === _PLACEHOLDER_RULE_DEST ||
               $scope.rule.dest === _PLACEHOLDER_RULE_DEST_END) {
             var newEndState = ($scope.rule.dest === _PLACEHOLDER_RULE_DEST_END);
-            $modal.open({
+            /*$modal.open({
               templateUrl: 'modals/addState',
               backdrop: true,
               resolve: {},
@@ -301,22 +318,13 @@ oppia.directive('ruleDetailsEditor', ['$log', function($log) {
               }]
             }).result.then(function(result) {
               if (result.action === 'addNewState') {
-                $scope.reloadingDestinations = true;
-                explorationStatesService.addState(result.newStateName, function() {
-                  $rootScope.$broadcast('refreshGraph');
-                  $timeout(function() {
-                    $scope.rule.dest = result.newStateName;
-                    lastSetRuleDest = $scope.rule.dest;
-                    // Reload the dropdown to include the new state.
-                    $scope.reloadingDestinations = false;
-                  });
-                }, newEndState);
+
               } else if (result.action === 'cancel') {
                 $scope.rule.dest = lastSetRuleDest;
               } else {
                 throw 'Invalid result action from add state modal: ' + result.action;
               }
-            });
+            });*/
           } else {
             lastSetRuleDest = $scope.rule.dest;
           }
@@ -324,6 +332,16 @@ oppia.directive('ruleDetailsEditor', ['$log', function($log) {
 
         $scope.isDefaultRule = function() {
           return ($scope.rule.definition.rule_type === 'default');
+        };
+
+        $scope.isCreatingNewState = function(rule) {
+          return rule.dest === _PLACEHOLDER_RULE_DEST ||
+              rule.dest === _PLACEHOLDER_RULE_DEST_END;
+        };
+
+        $scope.isNewStateNameValid = function(newStateName) {
+          var ess = explorationStatesService;
+          return ess.isNewStateNameValid(newStateName, false);
         };
 
         $scope.destChoices = [];
@@ -351,13 +369,13 @@ oppia.directive('ruleDetailsEditor', ['$log', function($log) {
           // Adding a new state is the second last option in the list.
           $scope.destChoices.push({
             id: _PLACEHOLDER_RULE_DEST,
-            text: 'A New Card...'
+            text: 'A New Card Called...'
           });
 
           // Adding an ending state is the last option in the list.
           $scope.destChoices.push({
             id: _PLACEHOLDER_RULE_DEST_END,
-            text: 'An Ending Card...'
+            text: 'An Ending Card Called...'
           });
         }, true);
       }

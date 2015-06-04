@@ -84,6 +84,6 @@
 
   <div class="modal-footer">
     <button class="btn btn-default" ng-click="cancel()">Cancel</button>
-    <button class="btn btn-success protractor-test-add-new-rule" ng-click="addNewRule()" ng-disabled="addRuleForm.ruleDetailsForm.$invalid || isRuleEmpty(tmpRule)">Add New Response</button>
+    <button class="btn btn-success protractor-test-add-new-rule" ng-click="addNewRule()" ng-disabled="addRuleForm.ruleDetailsForm.$invalid || isRuleEmpty(tmpRule) || (isCreatingNewState(tmpRule) && !isNewStateNameValid(tmpRule.newStateName))">Add New Response</button>
   </div>
 </script>
